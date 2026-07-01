@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Golyók - dőlős prototípus</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #12141c;
+    color: #eee;
+    font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+    overflow: hidden;
+    touch-action: none;
+    user-select: none;
+  }
+  #app {
+    display: flex; flex-direction: column; align-items: center;
+    height: 100%;
+    padding: 10px;
+  }
+  #topbar {
+    width: 100%;
+    max-width: 480px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 4px 12px 4px;
+  }
+  #score {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+  }
+  #score span { color: #ffd166; }
+  #status {
+    font-size: 13px;
+    color: #8a8fa3;
+    min-height: 18px;
+  }
+  #board-wrap {
+    position: relative;
+    width: min(92vw, 480px);
+    aspect-ratio: 1 / 1;
+    background: #1b1e2b;
+    border-radius: 14px;
+    padding: 6px;
+    box-shadow: inset 0 0 0 2px #2a2e42, 0 8px 24px rgba(0,0,0,0.4);
+  }
+  #board {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    display: grid;
+    grid-template-columns: repeat(10, 1fr);
+    grid-template-rows: repeat(10, 1fr);
+    gap: 2px;
+  }
+  .cell {
+    background: #22263a;
+    border-radius: 6px;
+    position: relative;
+  }
+  .ball {
+    position: absolute;
+    top: 8%; left: 8%; right: 8%; bottom: 8%;
+    border-radius: 50%;
+    transition: transform 0.32s ease, opacity 0.22s ease, background 0.15s ease;
+    box-shadow: inset -3px -3px 6px rgba(0,0,0,0.35), inset 3px 3px 5px rgba(255,255,255,0.25);
+  }
+  .ball.clearing {
+    transform: scale(1.35);
+    opacity: 0;
+  }
+  .ball.spawning {
+    transform: scale(0.2);
+    opacity: 0;
+  }
+  .c1 { background: #ff5d5d; }
+  .c2 { background: #4da3ff; }
+  .c3 { background: #5ee27a; }
+  .c4 { background: #ffd166; }
+  .c5 { background: #c084fc; }
+
+  #controls {
+    width: 100%;
+    max-width: 480px;
+    display: flex;
+    justify-content: center;
+    gap: 14px;
+    margin-top: 14px;
+  }
+  .btn {
+    flex: 1;
+    max-width: 140px;
+    padding: 14px 0;
+    border-radius: 12px;
+    border: none;
+    background: #2a2e42;
+    color: #eee;
+    font-size: 16px;
+    font-weight: 600;
+  }
+  .btn:active { background: #3a3f5c; }
+  #tiltBtn {
+    background: #ffd166;
+    color: #1b1e2b;
+  }
+  #overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(10,11,16,0.92);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    text-align: center;
+    padding: 24px;
+    z-index: 10;
+  }
+  #overlay h1 { font-size: 26px; margin-bottom: 6px; }
+  #overlay p { color: #8a8fa3; margin: 4px 0 20px 0; }
+  #tiltHint {
+    font-size: 12px;
+    color: #6b7086;
+    margin-top: 8px;
+    text-align: center;
+    max-width: 460px;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="topbar">
+    <div id="score">Pont: <span id="scoreVal">0</span></div>
+    <div id="status" id="statusText"></div>
+  </div>
+
+  <div id="board-wrap">
+    <div id="board"></div>
+  </div>
+
+  <div id="controls">
+    <button class="btn" id="leftBtn">⟲ Balra</button>
+    <button class="btn" id="tiltBtn">📱 Dőlés bekapcs.</button>
+    <button class="btn" id="rightBtn">Jobbra ⟳</button>
+  </div>
+  <div id="tiltHint">Döntsd a telefont jobbra vagy balra, hogy elmozduljanak a golyók. Ha a dőlés nem megy, használd a gombokat vagy a ← → billentyűket.</div>
+
+  <div id="overlay">
+    <h1>Vége a játéknak</h1>
+    <p id="finalScore"></p>
+    <button class="btn" id="restartBtn" style="background:#ffd166;color:#1b1e2b;max-width:200px;">Új játék</button>
+  </div>
+</div>
+
+<script>
+(function () {
+  const SIZE = 10;
+  const COLORS = 5;
+  const MATCH_MIN = 4;
+  const NEW_BALLS_PER_MOVE = 3;
+  const MOVE_COOLDOWN_MS = 650;
+  const TILT_THRESHOLD = 18;
+  const TILT_RESET = 7;
+
+  let grid = [];
+  let score = 0;
+  let busy = false;
+  let gameOver = false;
+  let lastMoveTime = 0;
+  let tiltArmed = true; // must return to flat before next tilt triggers again
+
+  const boardEl = document.getElementById('board');
+  const scoreEl = document.getElementById('scoreVal');
+  const statusEl = document.getElementById('statusText');
+  const overlayEl = document.getElementById('overlay');
+  const finalScoreEl = document.getElementById('finalScore');
+
+  // ---------- Audio ----------
+  let audioCtx = null;
+  function ensureAudio() {
+    if (!audioCtx) {
+      try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+      catch (e) { audioCtx = null; }
+    }
+  }
+  function beep(freq, duration, type, vol) {
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = type || 'sine';
+    osc.frequency.value = freq;
+    gain.gain.value = vol == null ? 0.08 : vol;
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start();
+    gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration);
+    osc.stop(audioCtx.currentTime + duration);
+  }
+  function playMatchSound(runLength) {
+    const base = 300 + (runLength - MATCH_MIN) * 90;
+    beep(base, 0.25, 'triangle', 0.09);
+    setTimeout(() => beep(base * 1.5, 0.2, 'triangle', 0.06), 70);
+  }
+  function playGameOverSound() {
+    beep(220, 0.5, 'sawtooth', 0.08);
+    setTimeout(() => beep(160, 0.6, 'sawtooth', 0.08), 200);
+  }
+  function playMoveSound() {
+    beep(500, 0.05, 'square', 0.03);
+  }
+
+  // ---------- Scoring ----------
+  // 4 -> 40, 5 -> 80, 6 -> 160, doubling per extra ball
+  function scoreForRun(n) {
+    return 40 * Math.pow(2, n - MATCH_MIN);
+  }
+
+  // ---------- Grid helpers ----------
+  function emptyGrid() {
+    const g = [];
+    for (let r = 0; r < SIZE; r++) g.push(new Array(SIZE).fill(0));
+    return g;
+  }
+
+  function randomColor() {
+    return 1 + Math.floor(Math.random() * COLORS);
+  }
+
+  function countFilled(g) {
+    let c = 0;
+    for (let r = 0; r < SIZE; r++) for (let col = 0; col < SIZE; col++) if (g[r][col] !== 0) c++;
+    return c;
+  }
+
+  function initGrid() {
+    grid = emptyGrid();
+    const targetFill = 34;
+    let placed = 0;
+    let guard = 0;
+    while (placed < targetFill && guard < 5000) {
+      guard++;
+      const r = Math.floor(Math.random() * SIZE);
+      const c = Math.floor(Math.random() * SIZE);
+      if (grid[r][c] === 0) {
+        grid[r][c] = randomColor();
+        placed++;
+      }
+    }
+  }
+
+  // Slide all rows left or right (compaction, no merging)
+  function slide(direction) {
+    let moved = false;
+    for (let r = 0; r < SIZE; r++) {
+      const row = grid[r];
+      const vals = row.filter(v => v !== 0);
+      let newRow;
+      if (direction === 'left') {
+        newRow = vals.concat(new Array(SIZE - vals.length).fill(0));
+      } else {
+        newRow = new Array(SIZE - vals.length).fill(0).concat(vals);
+      }
+      for (let c = 0; c < SIZE; c++) {
+        if (newRow[c] !== row[c]) moved = true;
+      }
+      grid[r] = newRow;
+    }
+    return moved;
+  }
+
+  // Find runs (>= MATCH_MIN) of equal color in rows and columns.
+  // Returns { cells: Set("r,c"), totalScore, runCount }
+  function findMatches() {
+    const marked = new Set();
+    let totalScore = 0;
+    let runCount = 0;
+
+    // rows
+    for (let r = 0; r < SIZE; r++) {
+      let c = 0;
+      while (c < SIZE) {
+        const val = grid[r][c];
+        if (val === 0) { c++; continue; }
+        let end = c;
+        while (end + 1 < SIZE && grid[r][end + 1] === val) end++;
+        const len = end - c + 1;
+        if (len >= MATCH_MIN) {
+          for (let k = c; k <= end; k++) marked.add(r + ',' + k);
+          totalScore += scoreForRun(len);
+          runCount++;
+        }
+        c = end + 1;
+      }
+    }
+    // columns
+    for (let c = 0; c < SIZE; c++) {
+      let r = 0;
+      while (r < SIZE) {
+        const val = grid[r][c];
+        if (val === 0) { r++; continue; }
+        let end = r;
+        while (end + 1 < SIZE && grid[end + 1][c] === val) end++;
+        const len = end - r + 1;
+        if (len >= MATCH_MIN) {
+          for (let k = r; k <= end; k++) marked.add(k + ',' + c);
+          totalScore += scoreForRun(len);
+          runCount++;
+        }
+        r = end + 1;
+      }
+    }
+    return { cells: marked, totalScore, runCount };
+  }
+
+  function clearCells(cellSet) {
+    cellSet.forEach(key => {
+      const [r, c] = key.split(',').map(Number);
+      grid[r][c] = 0;
+    });
+  }
+
+  // After clearing, existing balls fall down within each column, then
+  // empty slots at the top of that column are refilled with new balls.
+  function settleColumnsAndRefill() {
+    const spawned = new Set();
+    for (let c = 0; c < SIZE; c++) {
+      const colVals = [];
+      for (let r = 0; r < SIZE; r++) if (grid[r][c] !== 0) colVals.push(grid[r][c]);
+      const missing = SIZE - colVals.length;
+      const newCol = new Array(missing).fill(0).concat(colVals);
+      for (let r = 0; r < missing; r++) {
+        newCol[r] = randomColor();
+        spawned.add(r + ',' + c);
+      }
+      for (let r = 0; r < SIZE; r++) grid[r][c] = newCol[r];
+    }
+    return spawned;
+  }
+
+  function addExtraBalls(n) {
+    const emptyCells = [];
+    for (let r = 0; r < SIZE; r++) for (let c = 0; c < SIZE; c++) if (grid[r][c] === 0) emptyCells.push([r, c]);
+    const spawned = new Set();
+    for (let i = 0; i < n && emptyCells.length > 0; i++) {
+      const idx = Math.floor(Math.random() * emptyCells.length);
+      const [r, c] = emptyCells.splice(idx, 1)[0];
+      grid[r][c] = randomColor();
+      spawned.add(r + ',' + c);
+    }
+    return spawned;
+  }
+
+  // ---------- Rendering ----------
+  const cellEls = [];
+  function buildBoardDom() {
+    boardEl.innerHTML = '';
+    cellEls.length = 0;
+    for (let r = 0; r < SIZE; r++) {
+      const rowArr = [];
+      for (let c = 0; c < SIZE; c++) {
+        const cell = document.createElement('div');
+        cell.className = 'cell';
+        boardEl.appendChild(cell);
+        rowArr.push(cell);
+      }
+      cellEls.push(rowArr);
+    }
+  }
+
+  function render(options) {
+    options = options || {};
+    const clearingSet = options.clearing || new Set();
+    const spawningSet = options.spawning || new Set();
+    for (let r = 0; r < SIZE; r++) {
+      for (let c = 0; c < SIZE; c++) {
+        const cell = cellEls[r][c];
+        cell.innerHTML = '';
+        const val = grid[r][c];
+        if (val !== 0) {
+          const ball = document.createElement('div');
+          ball.className = 'ball c' + val;
+          const key = r + ',' + c;
+          if (clearingSet.has(key)) ball.classList.add('clearing');
+          if (spawningSet.has(key)) ball.classList.add('spawning');
+          cell.appendChild(ball);
+        }
+      }
+    }
+  }
+
+  function wait(ms) { return new Promise(res => setTimeout(res, ms)); }
+
+  // ---------- Game flow ----------
+  async function resolveBoard() {
+    let cascadeLevel = 0;
+    while (true) {
+      const { cells, totalScore, runCount } = findMatches();
+      if (cells.size === 0) break;
+      cascadeLevel++;
+      render({ clearing: cells });
+      playMatchSound(Math.max(...[...cells].map(() => MATCH_MIN)) + cascadeLevel);
+      score += totalScore * (cascadeLevel > 1 ? 1 : 1); // cascade currently same weight, room to tune later
+      scoreEl.textContent = score;
+      statusEl.textContent = cascadeLevel > 1 ? ('Kombó x' + cascadeLevel + '!') : 'Egyezés!';
+      await wait(260);
+      clearCells(cells);
+      render();
+      await wait(120);
+      const spawned = settleColumnsAndRefill();
+      render({ spawning: spawned });
+      await wait(320);
+    }
+    statusEl.textContent = '';
+  }
+
+  async function doMove(direction) {
+    const now = Date.now();
+    if (busy || gameOver) return;
+    if (now - lastMoveTime < MOVE_COOLDOWN_MS) return;
+    lastMoveTime = now;
+    busy = true;
+    ensureAudio();
+
+    const moved = slide(direction);
+    render();
+    if (moved) {
+      playMoveSound();
+      await wait(320);
+      await resolveBoard();
+    }
+
+    const spawned = addExtraBalls(NEW_BALLS_PER_MOVE);
+    render({ spawning: spawned });
+    await wait(280);
+    await resolveBoard();
+
+    if (countFilled(grid) >= SIZE * SIZE) {
+      endGame();
+    }
+    busy = false;
+  }
+
+  function endGame() {
+    gameOver = true;
+    playGameOverSound();
+    finalScoreEl.textContent = 'Elért pontszám: ' + score;
+    overlayEl.style.display = 'flex';
+  }
+
+  function restart() {
+    score = 0;
+    gameOver = false;
+    scoreEl.textContent = 0;
+    statusEl.textContent = '';
+    overlayEl.style.display = 'none';
+    initGrid();
+    render();
+  }
+
+  // ---------- Controls ----------
+  document.getElementById('leftBtn').addEventListener('click', () => doMove('left'));
+  document.getElementById('rightBtn').addEventListener('click', () => doMove('right'));
+  document.getElementById('restartBtn').addEventListener('click', restart);
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowLeft') doMove('left');
+    if (e.key === 'ArrowRight') doMove('right');
+  });
+
+  // Tilt controls (DeviceOrientationEvent). gamma: left-right tilt, -90..90
+  const tiltBtn = document.getElementById('tiltBtn');
+  function handleOrientation(e) {
+    const gamma = e.gamma;
+    if (gamma == null) return;
+    if (Math.abs(gamma) < TILT_RESET) {
+      tiltArmed = true;
+      return;
+    }
+    if (!tiltArmed) return;
+    if (gamma > TILT_THRESHOLD) {
+      tiltArmed = false;
+      doMove('right');
+    } else if (gamma < -TILT_THRESHOLD) {
+      tiltArmed = false;
+      doMove('left');
+    }
+  }
+
+  function enableTilt() {
+    ensureAudio();
+    if (typeof DeviceOrientationEvent !== 'undefined' &&
+        typeof DeviceOrientationEvent.requestPermission === 'function') {
+      DeviceOrientationEvent.requestPermission().then(state => {
+        if (state === 'granted') {
+          window.addEventListener('deviceorientation', handleOrientation);
+          tiltBtn.textContent = '📱 Dőlés aktív';
+          tiltBtn.disabled = true;
+        } else {
+          statusEl.textContent = 'Dőlés-engedély elutasítva.';
+        }
+      }).catch(() => {
+        statusEl.textContent = 'Dőlés nem elérhető ezen a böngészőn.';
+      });
+    } else if (window.DeviceOrientationEvent) {
+      window.addEventListener('deviceorientation', handleOrientation);
+      tiltBtn.textContent = '📱 Dőlés aktív';
+      tiltBtn.disabled = true;
+    } else {
+      statusEl.textContent = 'Ez az eszköz nem támogatja a dőlés-érzékelést.';
+    }
+  }
+  tiltBtn.addEventListener('click', enableTilt);
+
+  // ---------- Init ----------
+  buildBoardDom();
+  initGrid();
+  render();
+})();
+</script>
+</body>
+</html>
