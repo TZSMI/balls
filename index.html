@@ -334,7 +334,7 @@ let physicalMode = false;                       // igaz, ha a döntéses mód ak
 let motionActive = false;                       // fut-e a devicemotion figyelő
 let baseAngle = null;                           // kalibrációs szög (belépéskori "le" irány) — előjel-konvenció kikerülése
 let curSteps = 0;                               // hány 90°-ot fordult a telefon a kalibráció óta (0..3)
-const DIR_SENSE = 1;                            // +1/-1: ha a bal/jobb dőlés fordítva érződik a telefonon, ezt állítsd -1-re
+const DIR_SENSE = -1;                           // +1/-1: a forgatás iránya. -1 = telefont jobbra fordítva a golyók jobbra (le) esnek (valós telefonon így helyes)
 const HYST = 12;                                // hiszterézis fok — hogy 45° körül ne kapkodjon az irányváltás
 
 // Képernyő-cella (r,c) -> fizikai SÁV (a gravitációra merőleges csík indexe, 0..N-1).
