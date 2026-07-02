@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Gurulós golyók</title>
+<title>ShiftWall</title>
 <style>
   :root {
     /* a tábla mindig négyzet, ÉS elfér függőlegesen is (PONT-sor + gombok mellett) */
@@ -222,9 +222,9 @@
 </div>
 
 <div id="overlay">
-  <h1>Forgós golyók</h1>
-  <p>Forgasd az egész táblát balra vagy jobbra — akár többször is egymás után (180°, 270°…). Amint abbahagyod, a golyók leesnek az új aljára. Az azonos színű, összeérő csoportok eltűnnek: <b>automatikus</b> módban maguktól, <b>kattintós</b> módban ha rákattintasz.</p>
-  <p style="font-size:2.8vmin;color:#8b93a7">← → billentyűk vagy a gombok.</p>
+  <h1>ShiftWall</h1>
+  <p>Gyűjtsd egy csoportba az azonos színű, összeérő golyókat — <b>minél több ér össze egyszerre, annál több pont</b> (a pontszám a csoport méretével gyorsan nő). Rendezd át őket: <b>gombos</b> módban a táblát forgatod, <b>fizikai</b> módban a telefont döntöd 90°-ot. A csoportok <b>automatikus</b> módban maguktól tűnnek el, <b>kattintós</b> módban ha rákattintasz.</p>
+  <p style="font-size:2.8vmin;color:#8b93a7">Vezérlés: ← → billentyűk vagy a gombok · fizikai módban a telefon forgatása.</p>
   <div id="settings">
     <div class="setRow">
       <label for="mode">Eltűnés módja:</label>
@@ -259,7 +259,7 @@
     </div>
     <div class="setRow">
       <label for="ballCount">Kezdő golyók (1–100):</label>
-      <input id="ballCount" type="number" min="1" max="100" value="30" inputmode="numeric">
+      <input id="ballCount" type="number" min="1" max="100" value="80" inputmode="numeric">
     </div>
     <div class="setRow">
       <label for="colorCount">Színek száma (2–5):</label>
@@ -267,15 +267,15 @@
     </div>
     <div class="setRow">
       <label for="matchMin">Min. összeérő szín (eltűnés):</label>
-      <input id="matchMin" type="number" min="2" max="10" value="3" inputmode="numeric">
+      <input id="matchMin" type="number" min="2" max="10" value="2" inputmode="numeric">
     </div>
     <div class="setRow">
       <label for="maxBalls">Max. golyó összesen:</label>
-      <input id="maxBalls" type="number" min="1" max="999" value="100" inputmode="numeric">
+      <input id="maxBalls" type="number" min="1" max="999" value="150" inputmode="numeric">
     </div>
     <div class="setRow">
       <label for="timeLimit">Idő (mp, 0 = nincs):</label>
-      <input id="timeLimit" type="number" min="0" max="999" value="0" inputmode="numeric">
+      <input id="timeLimit" type="number" min="0" max="999" value="120" inputmode="numeric">
     </div>
   </div>
   <button id="startBtn">Indítás</button>
@@ -1035,7 +1035,7 @@ function beep(freq, dur, vol = 0.08) {
 // ===== Beállítások megőrzése (localStorage) =====
 // A kezdőképernyő mezőit Indításkor elmentjük, és a következő betöltéskor visszaírjuk,
 // hogy ne kelljen újra beállítani. (localStorage, nem cookie: nem jár le, nem megy a szerverre.)
-const SETTINGS_KEY = 'forgosGolyok.settings';
+const SETTINGS_KEY = 'shiftWall.settings';
 const SETTING_FIELDS = ['mode', 'rotMode', 'shape', 'scoreMode', 'ballCount', 'colorCount', 'matchMin', 'maxBalls', 'timeLimit'];
 
 // Az alak-választó (#shape) alapján beállítja a golyók formáját és a rés sűrűségét.
@@ -1113,6 +1113,10 @@ SETTING_FIELDS.forEach(id => {
     if (e.key === 'Enter') { e.preventDefault(); startGame(); }
   });
 });
+
+// Alapértelmezett forgatásmód az ESZKÖZ szerint: mobilon a fizikai (döntéses), desktopon a gombos.
+// Ez a DEFAULT — a lenti loadSettings felülírja, ha a user már választott és elmentette.
+document.getElementById('rotMode').value = isMobileLike() ? 'physical' : 'button';
 
 // A korábban elmentett beállítások visszatöltése a mezőkbe (ha van), majd az alak alkalmazása
 // (hogy a body-osztály + --gap-factor a mentett választásnak megfeleljen).
