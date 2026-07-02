@@ -92,6 +92,14 @@
   .c2 { background: #34b24b; }
   .c3 { background: #e0a800; }
   .c4 { background: #9b45e0; }
+  /* FIX BLOKK: rögzített akadály — nem esik, nem tűnik el, nem matchel. Elütő "kő" szín +
+     vésett perem, hogy ránézésre látszódjon: ez tömör, nem mozdítható. A shape-* border-radius
+     rá is vonatkozik (követi a golyók alakját), csak a kitöltése/pereme más. */
+  .ball.fixed {
+    background: #454b5c;
+    box-shadow: inset 0 0 0 3px #2b3040, inset 0 0 0 6px #565d70;
+  }
+  body.click-mode .ball.fixed { cursor: default; }   /* kattintós módban se tűnjön kattinthatónak */
   #controls {
     display: flex;
     gap: 3vmin;
@@ -241,6 +249,13 @@
       </select>
     </div>
     <div class="setRow">
+      <label for="tiltMode">Fizikai forgatás módja:</label>
+      <select id="tiltMode">
+        <option value="hold" selected>Tartott (90°-ban)</option>
+        <option value="flick">Billentés (egy lépés)</option>
+      </select>
+    </div>
+    <div class="setRow">
       <label for="shape">Alak (teszt):</label>
       <select id="shape">
         <option value="rounded" selected>Lekerekített, sűrű</option>
@@ -272,6 +287,10 @@
     <div class="setRow">
       <label for="maxBalls">Max. golyó összesen:</label>
       <input id="maxBalls" type="number" min="1" max="999" value="150" inputmode="numeric">
+    </div>
+    <div class="setRow">
+      <label for="fixedCount">Fix blokkok (0–50):</label>
+      <input id="fixedCount" type="number" min="0" max="50" value="3" inputmode="numeric">
     </div>
     <div class="setRow">
       <label for="timeLimit">Idő (mp, 0 = nincs):</label>
@@ -336,6 +355,10 @@ let baseAngle = null;                           // kalibrációs szög (belépé
 let curSteps = 0;                               // hány 90°-ot fordult a telefon a kalibráció óta (0..3)
 const DIR_SENSE = -1;                           // +1/-1: a forgatás iránya. -1 = telefont jobbra fordítva a golyók jobbra (le) esnek (valós telefonon így helyes)
 const HYST = 12;                                // hiszterézis fok — hogy 45° körül ne kapkodjon az irányváltás
+let tiltMode = 'hold';                          // 'hold' = tartott/abszolút (a telefon szögét követi) | 'flick' = billentés (egy dőlés = egy 90° lépés)
+let flickArmed = true;                          // billentés-módban: igaz, ha a következő flick "élesítve" van (semleges zónában voltunk)
+const FLICK_ARM = 15;                           // ennyinél kisebb dőlésnél (fok) élesedik a következő billentés
+const FLICK_FIRE = 35;                          // ennyinél nagyobb dőlésnél (fok) sül el egy 90° lépés (a kettő közt holt sáv → nem kapkod)
 
 // Képernyő-cella (r,c) -> fizikai SÁV (a gravitációra merőleges csík indexe, 0..N-1).
 function laneOf(r, c) {
@@ -398,6 +421,22 @@ function addBall(r, c, color) {
   return id;
 }
 
+// FIX BLOKK létrehozása egy képernyő-cellába. Ugyanúgy a balls Map-ben él, mint egy golyó,
+// de `fixed:true` + sentinel szín (-1): ettől ÖRÖKRE settled (a fizika falként kezeli, a golyók
+// ráülnek), a liftFromGrid nem emeli fel, a checkMatches/tryPop/noMovesLeft kihagyja.
+function addFixed(r, c) {
+  const id = nextId++;
+  const el = document.createElement('div');
+  el.className = 'ball fixed';
+  el.dataset.id = id;
+  boardEl.appendChild(el);
+  const b = { color: -1, el, col: laneOf(r, c), y: depthOf(r, c), vy: 0, settled: true, fixed: true };
+  balls.set(id, b);
+  grid[r][c] = id;
+  placeBall(b);
+  return id;
+}
+
 // Minden golyót a saját (col, y) fizikai pozíciója szerint kirajzol.
 function render() {
   for (const b of balls.values()) placeBall(b);
@@ -411,8 +450,9 @@ function liftFromGrid() {
       const id = grid[r][c];
       if (!id) continue;
       const b = balls.get(id);
-      b.col = laneOf(r, c); b.y = depthOf(r, c); b.vy = 0; b.settled = false;
-      grid[r][c] = null;
+      b.col = laneOf(r, c); b.y = depthOf(r, c); b.vy = 0;
+      if (b.fixed) { b.settled = true; }          // fix: marad a helyén ÉS a gridben, csak a sáv/mélység frissül
+      else { b.settled = false; grid[r][c] = null; }
     }
   }
 }
@@ -452,15 +492,28 @@ function freezeToGrid() {
   const cols = Array.from({length: COLS}, () => []);   // itt "col" = fizikai SÁV
   for (const [id, b] of balls) cols[b.col].push(id);
   for (let lane = 0; lane < COLS; lane++) {
-    const list = cols[lane].sort((a, b) => balls.get(a).y - balls.get(b).y); // belépő él → padló felé
-    let maxRow = ROWS - 1;                 // az alatta lévő "padló" MÉLYSÉGE (felfelé haladva csökken)
-    for (let i = list.length - 1; i >= 0; i--) {   // padló felől a belépő él felé
-      const b = balls.get(list[i]);
+    // 1) FIX blokkok elhelyezése változatlan mélységükön (ezek horgonyok).
+    const fixedRows = new Set();
+    for (const id of cols[lane]) {
+      const b = balls.get(id);
+      if (!b.fixed) continue;
+      b.y = Math.round(b.y);
+      fixedRows.add(b.y);
+      const [sr, sc] = physToScreenRC(lane, b.y);
+      grid[sr][sc] = id;
+    }
+    // 2) Mozgó golyók: padló felől fölfelé, a fix sorokat KIHAGYVA, sosem az alatta lévő fölé.
+    const movers = cols[lane].filter(id => !balls.get(id).fixed)
+                             .sort((a, b) => balls.get(a).y - balls.get(b).y);
+    let maxRow = ROWS - 1;
+    for (let i = movers.length - 1; i >= 0; i--) {
+      const b = balls.get(movers[i]);
       let row = Math.min(Math.round(b.y), maxRow);  // row = egész MÉLYSÉG
-      if (row < 0) row = 0;                // (elvi) biztosíték
+      while (row >= 0 && fixedRows.has(row)) row--;  // ne üljön fix cellára (a fix fölé csúszik)
+      if (row < 0) row = 0;                          // (elvi) biztosíték
       b.y = row; b.vy = 0; b.settled = true;
-      const [sr, sc] = physToScreenRC(lane, row);   // (sáv, mélység) -> képernyő rács-cella
-      grid[sr][sc] = list[i];
+      const [sr, sc] = physToScreenRC(lane, row);
+      grid[sr][sc] = movers[i];
       maxRow = row - 1;
     }
   }
@@ -610,10 +663,22 @@ function handleMotion(e) {
   const angle = Math.atan2(ax, ay) * 180 / Math.PI;
   if (baseAngle === null) baseAngle = angle;         // első stabil olvasás = kalibráció (ez a "le")
   let delta = ((((angle - baseAngle) * DIR_SENSE) + 180) % 360 + 360) % 360 - 180;  // -180..180
-  const target = ((Math.round(delta / 90) % 4) + 4) % 4;
-  if (angDist(delta, curSteps * 90) > 45 + HYST) {   // hiszterézis: csak jókora fordulatnál váltunk
-    curSteps = target;
-    applyGravityChange(DIR_CW[curSteps]);
+
+  if (tiltMode === 'flick') {
+    // BILLENTÉS: kis dőlés = EGY 90° lépés, és úgy marad (a telefont nem kell elforgatva tartani).
+    // Vissza a semleges (egyenes) zónába → élesíti a következő billentést. Jobbra billentés = CW, balra = CCW.
+    if (Math.abs(delta) < FLICK_ARM) flickArmed = true;
+    else if (flickArmed && Math.abs(delta) > FLICK_FIRE) {
+      rotGravity(delta > 0 ? 1 : -1);
+      flickArmed = false;
+    }
+  } else {
+    // TARTOTT (abszolút): a gravitáció a telefon TÉNYLEGES szögét követi (90°-ban kell tartani).
+    const target = ((Math.round(delta / 90) % 4) + 4) % 4;
+    if (angDist(delta, curSteps * 90) > 45 + HYST) {   // hiszterézis: csak jókora fordulatnál váltunk
+      curSteps = target;
+      applyGravityChange(DIR_CW[curSteps]);
+    }
   }
   updateDbg(ax, ay, delta);
 }
@@ -672,6 +737,7 @@ function updateDbg(ax, ay, delta) {
   if (!n) return;
   n.textContent =
     'grav: ' + gravityDir + '  lépés: ' + curSteps + '\n' +
+    'mód: ' + tiltMode + (tiltMode === 'flick' ? (flickArmed ? ' ● élesítve' : ' ○') : '') + '\n' +
     'ax: ' + (ax == null ? '—' : ax.toFixed(2)) + '  ay: ' + (ay == null ? '—' : ay.toFixed(2)) + '\n' +
     'Δszög: ' + (delta == null ? '—' : delta.toFixed(0) + '°');
 }
@@ -703,7 +769,7 @@ function checkMatches() {
   const toRemove = [];
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
-      if (seen[r][c] || !grid[r][c]) continue;
+      if (seen[r][c] || !grid[r][c] || balls.get(grid[r][c]).fixed) continue;  // fix blokkról nem indul csoport
       const color = balls.get(grid[r][c]).color;
       const group = [];
       const stack = [[r, c]];
@@ -757,6 +823,7 @@ function checkMatches() {
 function tryPop(r, c) {
   const startId = grid[r][c];
   if (!startId) return false;
+  if (balls.get(startId).fixed) return false;   // fix blokkra kattintva nem történik semmi
   const color = balls.get(startId).color;
   const group = [];
   const seen = Array.from({length: ROWS}, () => Array(COLS).fill(false));
@@ -808,6 +875,13 @@ function boardFull() {
   return true;
 }
 
+// Hány ELTÜNTETHETŐ (nem fix) golyó van a táblán — a fix blokkok nem számítanak.
+function coloredBallsLeft() {
+  let n = 0;
+  for (const b of balls.values()) if (!b.fixed) n++;
+  return n;
+}
+
 // Matematikailag NINCS több lehetséges egyezés? Csak akkor lehet emiatt vége, ha már nem jön
 // több golyó (remaining==0). Ha egyetlen szín sem éri el a matchMin darabszámot a táblán,
 // akkor bárhogy is forgatjuk, sosem tűnhet el több golyó → vége. Ha van legalább matchMin
@@ -817,6 +891,7 @@ function noMovesLeft() {
   if (remaining > 0) return false;
   const counts = {};
   for (const b of balls.values()) {
+    if (b.fixed) continue;                            // a fix blokkok sosem tűnnek el → nem számítanak
     counts[b.color] = (counts[b.color] || 0) + 1;
     if (counts[b.color] >= matchMin) return false;   // ezzel a színnel még lehet egyezés
   }
@@ -872,7 +947,7 @@ function onSettled() {
   stable = true;                     // teljes nyugalom
   if (boardFull()) { gameOver('Vége!', 'Megtelt a tábla · Pontszám: ' + score); return; }
   if (noMovesLeft()) {               // matematikailag nincs több egyezés → vége
-    if (balls.size === 0)
+    if (coloredBallsLeft() === 0)    // csak fix blokkok maradhatnak — az is "kipucolt"
       gameOver('Kipucoltad a táblát! 🎉', 'Minden golyó eltűnt · Pontszám: ' + score);
     else
       gameOver('Nincs több lépés', 'Nem hozható ki több egyezés · Pontszám: ' + score);
@@ -904,7 +979,7 @@ function startGame() {
   stopTimer();
   stopMotion();                                   // előző menet szenzora leáll
   animating = false; spinning = false; spinQueue = [];
-  gravityDir = 'down'; curSteps = 0; baseAngle = null;   // minden menet "le" gravitációval indul
+  gravityDir = 'down'; curSteps = 0; baseAngle = null; flickArmed = true;   // minden menet "le" gravitációval indul
   wrapEl.classList.remove('spin-cw', 'spin-ccw');
   emptyGrid();
   balls.forEach(b => b.el.remove());
@@ -936,15 +1011,25 @@ function startGame() {
   // FIZIKAI mód: csak akkor, ha a menüben ez van kiválasztva. Mobilon szenzor + fullscreen + lock
   // (a kickPhysical MÉG a Start-gesztusban fut, ezért van itt); desktopon a nyilakkal szimulálható.
   physicalMode = document.getElementById('rotMode').value === 'physical';
+  tiltMode = document.getElementById('tiltMode').value;   // 'hold' (tartott) | 'flick' (billentés)
   document.body.classList.toggle('physical-mode', physicalMode);
   if (physicalMode && isMobileLike()) kickPhysical();   // engedély + fullscreen — a Start koppintásból
   applyShape();     // alak + rés beállítása MÉG a golyók létrehozása előtt (pozíció a gapFactor-ral számol)
   saveSettings();   // a beállított értékek megőrzése a következő betöltésre
 
-  // Kezdő golyók: mező (1–100), a tábla méretére ÉS a hátralévő keretre korlátozva.
-  let startCount = Math.min(readNum('ballCount', INITIAL_BALLS, 1, 100), cells.length, remaining);
-  for (let i = 0; i < startCount; i++) {
+  // FIX blokkok: a kevert cellák elejéből annyi, amennyit a mező kér (0–50). Ezek NEM esnek,
+  // NEM tűnnek el; a golyók a MARADÉK cellákba szóródnak (a fix cellákat kihagyva).
+  const nFixed = Math.min(readNum('fixedCount', 0, 0, 50), cells.length);
+  for (let i = 0; i < nFixed; i++) {
     const [r, c] = cells[i];
+    addFixed(r, c);
+  }
+  const ballCells = cells.slice(nFixed);   // a fixek helyét kihagyva marad a golyóknak
+
+  // Kezdő golyók: mező (1–100), a szabad cellákra ÉS a hátralévő keretre korlátozva.
+  let startCount = Math.min(readNum('ballCount', INITIAL_BALLS, 1, 100), ballCells.length, remaining);
+  for (let i = 0; i < startCount; i++) {
+    const [r, c] = ballCells[i];
     addBall(r, c, Math.floor(Math.random() * nColors));
   }
   remaining -= startCount;         // a kezdő szórás is fogyasztja a keretet
@@ -1036,7 +1121,7 @@ function beep(freq, dur, vol = 0.08) {
 // A kezdőképernyő mezőit Indításkor elmentjük, és a következő betöltéskor visszaírjuk,
 // hogy ne kelljen újra beállítani. (localStorage, nem cookie: nem jár le, nem megy a szerverre.)
 const SETTINGS_KEY = 'shiftWall.settings';
-const SETTING_FIELDS = ['mode', 'rotMode', 'shape', 'scoreMode', 'ballCount', 'colorCount', 'matchMin', 'maxBalls', 'timeLimit'];
+const SETTING_FIELDS = ['mode', 'rotMode', 'tiltMode', 'shape', 'scoreMode', 'ballCount', 'colorCount', 'matchMin', 'maxBalls', 'fixedCount', 'timeLimit'];
 
 // Az alak-választó (#shape) alapján beállítja a golyók formáját és a rés sűrűségét.
 // A JS gapFactor és a CSS --gap-factor MINDIG együtt mozog, hogy a golyó-pozíció (JS) és
