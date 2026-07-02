@@ -6,10 +6,13 @@
 <title>Gurulós golyók</title>
 <style>
   :root {
-    --board: 92vmin;
+    /* a tábla mindig négyzet, ÉS elfér függőlegesen is (PONT-sor + gombok mellett) */
+    --board: min(92vw, 74vh);
     --cols: 10;
     --cell: calc(var(--board) / var(--cols));
-    --gap: calc(var(--cell) * 0.08);
+    /* A rés az alak-választótól függ (JS állítja a --gap-factor-t); a JS gapFactor mindig ezzel egyezik. */
+    --gap-factor: 0.08;
+    --gap: calc(var(--cell) * var(--gap-factor));
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body {
@@ -40,30 +43,55 @@
   #hud .val { font-size: 4.4vmin; font-weight: 700; }
   #boardWrap {
     position: relative;
+    flex-shrink: 0;
     width: var(--board);
     height: var(--board);
     background: #1c2130;
     border-radius: calc(var(--cell) * 0.18);
     box-shadow: inset 0 0 0 2px #2a3145, 0 10px 30px rgba(0,0,0,.4);
     overflow: hidden;
-    transition: transform .18s ease;
   }
+  /* Az egész tábla 90°-os megpördülése forgatáskor — sima forgás, zoom nélkül.
+     45°-nál a sarkai kinyúlnak (a gombok alá / a képernyő széle mögé fordulnak),
+     ez így szándékos. A 100% pontosan rotate(±90) — így az animáció végén ugrás
+     nélkül köthető el a logikai forgatás (a CSS rotate(90) == rotateBoard(1)). */
+  @keyframes spinCW {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(90deg); }
+  }
+  @keyframes spinCCW {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(-90deg); }
+  }
+  #boardWrap.spin-cw  { animation: spinCW  .38s cubic-bezier(.45,.05,.25,1) both; }
+  #boardWrap.spin-ccw { animation: spinCCW .38s cubic-bezier(.45,.05,.25,1) both; }
   #board { position: absolute; inset: 0; }
   .ball {
     position: absolute;
     width: calc(var(--cell) - var(--gap) * 2);
     height: calc(var(--cell) - var(--gap) * 2);
-    border-radius: 50%;
+    border-radius: calc(var(--cell) * 0.16);   /* lekerekített NÉGYZET (kocka-kinézet) */
     transform: translate(0,0);
-    transition: transform .09s linear, opacity .18s ease;
+    /* A mozgást requestAnimationFrame hajtja képkockánként — NINCS transform-transition,
+       különben a böngésző "kisimítaná" és elrontaná a gyorsuló gravitáció érzését. */
+    transition: opacity .22s ease;
     will-change: transform;
+    /* Lapos 2D kinézet: NINCS bevel/csillanás/árnyék — nyugodtabb, nem "villódzik" a szemnek. */
   }
-  .ball.pop { transform: translate(var(--x), var(--y)) scale(1.6) !important; opacity: 0; }
-  .c0 { background: radial-gradient(circle at 32% 30%, #ff8a8a, #e23b3b); }
-  .c1 { background: radial-gradient(circle at 32% 30%, #8ab6ff, #2f6fe0); }
-  .c2 { background: radial-gradient(circle at 32% 30%, #9df0a8, #2fb84a); }
-  .c3 { background: radial-gradient(circle at 32% 30%, #ffe27a, #e0a800); }
-  .c4 { background: radial-gradient(circle at 32% 30%, #d7a6ff, #9b45e0); }
+  .ball.pop { transition: transform .25s ease-out, opacity .22s ease; transform: translate(var(--x), var(--y)) scale(1.5) !important; opacity: 0; }
+  /* Kattintós módban a golyók kattinthatók (kurzor jelzi). */
+  body.click-mode .ball { cursor: pointer; }
+  /* Alak-választó (kezdőképernyő teszt): kör / éles négyzet / sűrű lekerekített.
+     A réstávot a --gap-factor / JS gapFactor állítja, itt csak a sarok-lekerekítés. */
+  body.shape-balls   .ball { border-radius: 50%; }
+  body.shape-square  .ball { border-radius: 0; }
+  body.shape-rounded .ball { border-radius: calc(var(--cell) * 0.12); }
+  /* Lapos 2D: tömör, egyszínű kitöltés — nyugodt, jól látszanak a csoportok. */
+  .c0 { background: #e2463f; }
+  .c1 { background: #3272e0; }
+  .c2 { background: #34b24b; }
+  .c3 { background: #e0a800; }
+  .c4 { background: #9b45e0; }
   #controls {
     display: flex;
     gap: 3vmin;
@@ -82,45 +110,174 @@
     transition: background .1s;
   }
   .btn:active, .btn.held { background: #3d63c9; }
+  /* Vissza-a-menübe gomb: bal felső sarok, játék közben látszik; a menü-overlay (z-index 10)
+     eltakarja, amikor a kezdőképernyő fent van. */
+  #menuBtn {
+    position: fixed;
+    top: 2vmin; left: 2vmin;
+    z-index: 5;
+    width: 9vmin; height: 9vmin;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 4.6vmin; line-height: 1;
+    background: #2a3145; color: #e8ecf3;
+    border: none; border-radius: 2vmin;
+    cursor: pointer;
+  }
+  #menuBtn:active { background: #3d63c9; }
+  /* FIZIKAI (döntéses) mód: a tábla ÁLL, a gravitáció fordul — nincsenek forgató-gombok,
+     csak a ☰ (kilépés). A gombokat elrejtjük, hogy a tábla középen maradjon. */
+  body.physical-mode #controls { display: none; }
+  /* Fejlesztői kijelző a fizikai módhoz (szenzor-nyers adat + felismert irány).
+     'd' billentyűvel / a .dbg-off osztállyal elrejthető. Élesben majd kivesszük. */
+  #dbg {
+    position: fixed; left: 2vmin; bottom: 2vmin; z-index: 6;
+    font: 600 12px/1.5 ui-monospace, Menlo, Consolas, monospace;
+    color: #7fffd4; background: rgba(0,0,0,.55);
+    padding: 6px 9px; border-radius: 6px; white-space: pre; pointer-events: none;
+    display: none;
+  }
+  body.physical-mode:not(.dbg-off) #dbg { display: block; }
+  /* Rövid buborék-üzenet (pl. iPhone-nak: kapcsold ki az auto-forgatást). */
+  #note {
+    position: fixed; top: 2vmin; left: 50%; transform: translateX(-50%);
+    z-index: 11; max-width: 88vw;
+    font-size: 2vmin; line-height: 1.3; text-align: center;
+    color: #fff; background: rgba(40,50,72,.96);
+    padding: 1.4vmin 2.4vmin; border-radius: 1.4vmin;
+    box-shadow: 0 6px 20px rgba(0,0,0,.5);
+    display: none;
+  }
   #overlay {
     position: fixed; inset: 0;
     background: rgba(10,12,18,.86);
     display: flex; flex-direction: column;
-    align-items: center; justify-content: center;
-    gap: 3vmin; text-align: center; z-index: 10;
-    padding: 6vmin;
+    align-items: center; justify-content: safe center;
+    gap: 1.3vmin; text-align: center; z-index: 10;
+    padding: 3vmin; overflow-y: auto;   /* sok beállításnál se fusson ki az Indítás gomb */
   }
   #overlay.hidden { display: none; }
-  #overlay h1 { font-size: 7vmin; margin: 0; }
-  #overlay p { font-size: 3.4vmin; color: #b7bfd0; margin: 0; max-width: 80vmin; line-height: 1.4; }
+  #overlay h1 { font-size: 4.4vmin; margin: 0; }
+  #overlay p { font-size: 2.1vmin; color: #b7bfd0; margin: 0; max-width: 70vmin; line-height: 1.3; }
+  #settings {
+    display: flex; flex-direction: column; gap: 0.8vmin;
+    width: 62vmin; max-width: 94vw;
+  }
+  .setRow {
+    display: flex; align-items: center; justify-content: space-between; gap: 1.6vmin;
+    font-size: 2vmin; color: #b7bfd0;
+  }
+  .setRow label { flex: 1; text-align: left; }
+  .setRow input {
+    width: 14vmin;
+    padding: 0.7vmin;
+    font-size: 2.2vmin;
+    font-weight: 700;
+    text-align: center;
+    background: #1c2130;
+    color: #e8ecf3;
+    border: 2px solid #2a3145;
+    border-radius: 1vmin;
+    font-variant-numeric: tabular-nums;
+  }
+  .setRow input:focus { outline: none; border-color: #3d63c9; }
+  .setRow select {
+    width: 25vmin;
+    padding: 0.7vmin;
+    font-size: 2vmin;
+    font-weight: 700;
+    text-align: center;
+    background: #1c2130;
+    color: #e8ecf3;
+    border: 2px solid #2a3145;
+    border-radius: 1vmin;
+    cursor: pointer;
+  }
+  .setRow select:focus { outline: none; border-color: #3d63c9; }
   #startBtn {
-    margin-top: 2vmin;
-    padding: 3vmin 8vmin;
-    font-size: 4.6vmin;
+    margin-top: 1.2vmin;
+    padding: 1.5vmin 6vmin;
+    font-size: 3.1vmin;
     font-weight: 700;
     background: #3d63c9;
     color: #fff; border: none;
-    border-radius: 3vmin; cursor: pointer;
+    border-radius: 2vmin; cursor: pointer;
   }
 </style>
 </head>
 <body>
+<button id="menuBtn" title="Vissza a menübe" aria-label="Vissza a menübe">☰</button>
+<div id="note"></div>
+<div id="dbg"></div>
 <div id="app">
   <div id="hud">
     <div><span class="label">PONT</span> <span class="val" id="score">0</span></div>
-    <div><span class="label">DŐLÉS</span> <span class="val" id="tiltInd">•</span></div>
+    <div><span class="label">HÁTRA</span> <span class="val" id="remain">0</span></div>
+    <div id="timeBox" style="display:none"><span class="label">IDŐ</span> <span class="val" id="clock">0:00</span></div>
   </div>
   <div id="boardWrap"><div id="board"></div></div>
   <div id="controls">
-    <button class="btn" id="leftBtn">◀ Balra</button>
-    <button class="btn" id="rightBtn">Jobbra ▶</button>
+    <button class="btn" id="leftBtn">⟲ Forgat</button>
+    <button class="btn" id="rightBtn">Forgat ⟳</button>
   </div>
 </div>
 
 <div id="overlay">
-  <h1>Gurulós golyók</h1>
-  <p>Döntsd a telefont balra vagy jobbra — a golyók abba az irányba gurulnak és leesnek. 3+ egyforma összeérő golyó eltűnik.</p>
-  <p style="font-size:2.8vmin;color:#8b93a7">Asztalon: ← → billentyűk vagy a gombok.</p>
+  <h1>Forgós golyók</h1>
+  <p>Forgasd az egész táblát balra vagy jobbra — akár többször is egymás után (180°, 270°…). Amint abbahagyod, a golyók leesnek az új aljára. Az azonos színű, összeérő csoportok eltűnnek: <b>automatikus</b> módban maguktól, <b>kattintós</b> módban ha rákattintasz.</p>
+  <p style="font-size:2.8vmin;color:#8b93a7">← → billentyűk vagy a gombok.</p>
+  <div id="settings">
+    <div class="setRow">
+      <label for="mode">Eltűnés módja:</label>
+      <select id="mode">
+        <option value="auto">Automatikus</option>
+        <option value="click" selected>Kattintós</option>
+      </select>
+    </div>
+    <div class="setRow">
+      <label for="rotMode">Forgatás (mobil, teszt):</label>
+      <select id="rotMode">
+        <option value="button" selected>Gombos (tábla pörög)</option>
+        <option value="physical">Fizikai (telefont döntöd)</option>
+      </select>
+    </div>
+    <div class="setRow">
+      <label for="shape">Alak (teszt):</label>
+      <select id="shape">
+        <option value="rounded" selected>Lekerekített, sűrű</option>
+        <option value="balls">Golyók</option>
+        <option value="square">Négyzet, éles</option>
+      </select>
+    </div>
+    <div class="setRow">
+      <label for="scoreMode">Pontozás:</label>
+      <select id="scoreMode">
+        <option value="quad" selected>Kvadratikus</option>
+        <option value="exp2">Exponenciális ×2</option>
+        <option value="exp3">Exponenciális ×3</option>
+        <option value="exp10">Exponenciális ×10</option>
+      </select>
+    </div>
+    <div class="setRow">
+      <label for="ballCount">Kezdő golyók (1–100):</label>
+      <input id="ballCount" type="number" min="1" max="100" value="30" inputmode="numeric">
+    </div>
+    <div class="setRow">
+      <label for="colorCount">Színek száma (2–5):</label>
+      <input id="colorCount" type="number" min="2" max="5" value="5" inputmode="numeric">
+    </div>
+    <div class="setRow">
+      <label for="matchMin">Min. összeérő szín (eltűnés):</label>
+      <input id="matchMin" type="number" min="2" max="10" value="3" inputmode="numeric">
+    </div>
+    <div class="setRow">
+      <label for="maxBalls">Max. golyó összesen:</label>
+      <input id="maxBalls" type="number" min="1" max="999" value="100" inputmode="numeric">
+    </div>
+    <div class="setRow">
+      <label for="timeLimit">Idő (mp, 0 = nincs):</label>
+      <input id="timeLimit" type="number" min="0" max="999" value="0" inputmode="numeric">
+    </div>
+  </div>
   <button id="startBtn">Indítás</button>
 </div>
 
@@ -128,95 +285,416 @@
 // ===== Beállítások (könnyen hangolható) =====
 const ROWS = 10, COLS = 10;
 const NCOLORS = 5;
-const STEP_MS = 85;        // egy fizikai mikro-lépés ideje (kisebb = gyorsabb gurulás)
-const SPAWN_MS = 3800;     // milyen gyakran essen be új golyó felülről
-const INITIAL_BALLS = 34;  // hány golyóval induljon
-const MATCH_MIN = 3;       // ennyi összeérő azonos szín tűnik el
-const TILT_DEG = 7;        // ekkora dőlés (fok) felett vált a gravitáció oldalra
+const GRAVITY = 32;         // gravitációs gyorsulás (cella / másodperc^2) — nagyobb = erősebben húz lefelé
+const MAX_VY = 15;          // maximális esési sebesség (cella/mp), hogy hosszú esésnél se legyen túl gyors
+const SPAWN_PER_MOVE = 3;   // ennyi új golyó pottyan be minden forgatás után
+const INITIAL_BALLS = 30;   // hány golyóval induljon
+const MATCH_MIN = 3;        // ennyi összeérő azonos szín tűnik el
 // ============================================
 
 const boardEl = document.getElementById('board');
 const wrapEl = document.getElementById('boardWrap');
 const scoreEl = document.getElementById('score');
-const tiltIndEl = document.getElementById('tiltInd');
+const remainEl = document.getElementById('remain');
+const clockEl = document.getElementById('clock');
+const timeBox = document.getElementById('timeBox');
 const overlay = document.getElementById('overlay');
+// Az eredeti kezdőképernyő-szöveg (a gameOver felülírja a címet/leírást a pontszámmal —
+// a menübe visszatéréskor ezekből állítjuk vissza).
+const ORIG_H1 = overlay.querySelector('h1').textContent;
+const ORIG_P_HTML = overlay.querySelector('p').innerHTML;
 
-let grid = [];             // grid[r][c] = ball id vagy null
-let balls = new Map();     // id -> { color, el }
+let grid = [];             // grid[r][c] = ball id vagy null (a NYUGALMI állapot logikai igazsága)
+let balls = new Map();     // id -> { color, el, col, y, vy, settled }
 let nextId = 1;
 let score = 0;
 let running = false;
 let combo = 0;
-let wasMoving = false;
+let stable = false;        // igaz, ha minden golyó nyugalomban van (ilyenkor lehet forgatni)
+let spawnPending = false;  // egy forgatás után jelzi, hogy jöjjenek új golyók
+let matchMin = MATCH_MIN;  // hány összeérő azonos szín tűnjön el (teszt-mezőből felülírható)
+let nColors = NCOLORS;     // hányféle színű golyó legyen (2–5, teszt-mezőből felülírható)
+let clickMode = false;     // igaz = a csoportok NEM automatikusan, csak KATTINTÁSRA tűnnek el
+let scoreMode = 'quad';    // pontozási képlet: 'quad' | 'exp2' | 'exp3' | 'exp10' (teszt-mezőből)
+let gapFactor = 0.08;      // rés a cellamérethez képest — alak-választótól függ (CSS --gap-factor ezzel egyezik)
+let remaining = 0;         // hány golyó eshet még le összesen (0-ig fogy, aztán nincs több)
+let timeLimit = 0;         // játékidő másodpercben (0 = nincs időkorlát)
+let timeLeft = 0;          // hátralévő idő (mp)
+let timerId = null;        // a másodperces visszaszámláló (setInterval) azonosítója
 
-// gravitáció vízszintes komponense: -1 (bal), 0, +1 (jobb)
-let keyDx = 0, btnDx = 0, tiltDx = 0;
-function currentDx() {
-  if (keyDx !== 0) return keyDx;
-  if (btnDx !== 0) return btnDx;
-  return tiltDx;
+// ===== Gravitáció iránya (a FIZIKAI/döntéses módhoz) =====
+// A grid MINDIG képernyő-koordinátákban van (r=sor, c=oszlop). A fizika viszont mindig
+// "lefelé" (növekvő mélység) ejt, sávonként (a gravitációra merőleges csík). Ezt a két
+// nézetet a lenti transzformációk kötik össze: gravityDir szerint forgatjuk a képernyő-cellát
+// (sáv, mélység) párrá és vissza. gravityDir='down' esetén MINDEN transzformáció azonosság,
+// így a desktop/gombos mód viselkedése bitre változatlan marad.
+let gravityDir = 'down';                        // 'down' | 'right' | 'up' | 'left' — merre húz a gravitáció a KÉPERNYŐN
+const DIR_CW = ['down', 'right', 'up', 'left']; // egymás utáni 90°-os CW lépések (telefon jobbra fordítva)
+let physicalMode = false;                       // igaz, ha a döntéses mód aktív (gombok helyett szenzor)
+let motionActive = false;                       // fut-e a devicemotion figyelő
+let baseAngle = null;                           // kalibrációs szög (belépéskori "le" irány) — előjel-konvenció kikerülése
+let curSteps = 0;                               // hány 90°-ot fordult a telefon a kalibráció óta (0..3)
+const DIR_SENSE = 1;                            // +1/-1: ha a bal/jobb dőlés fordítva érződik a telefonon, ezt állítsd -1-re
+const HYST = 12;                                // hiszterézis fok — hogy 45° körül ne kapkodjon az irányváltás
+
+// Képernyő-cella (r,c) -> fizikai SÁV (a gravitációra merőleges csík indexe, 0..N-1).
+function laneOf(r, c) {
+  return (gravityDir === 'down' || gravityDir === 'up') ? c : r;
+}
+// Képernyő-cella (r,c) -> fizikai MÉLYSÉG (a gravitáció mentén; 0 = belépő él, N-1 = padló).
+function depthOf(r, c) {
+  switch (gravityDir) {
+    case 'down':  return r;
+    case 'up':    return ROWS - 1 - r;
+    case 'right': return c;
+    default:      return COLS - 1 - c;   // 'left'
+  }
+}
+// Fizikai (sáv, mélység — a mélység lehet tört esés közben) -> képernyő cellatér (sx=oszlop, sy=sor).
+// Ezzel rajzolunk (translate), és ebből számoljuk a rács-cellát is.
+function physToScreenXY(lane, depth) {
+  switch (gravityDir) {
+    case 'down':  return [lane, depth];
+    case 'up':    return [lane, (ROWS - 1) - depth];
+    case 'right': return [depth, lane];
+    default:      return [(COLS - 1) - depth, lane];   // 'left'
+  }
+}
+// Fizikai (sáv, EGÉSZ mélység) -> képernyő rács-cella [r, c].
+function physToScreenRC(lane, depth) {
+  const [sx, sy] = physToScreenXY(lane, depth);
+  return [Math.round(sy), Math.round(sx)];
 }
 
 function emptyGrid() {
   grid = Array.from({length: ROWS}, () => Array(COLS).fill(null));
 }
 
+function cellPx() {
+  return Math.min(wrapEl.clientWidth, wrapEl.clientHeight) / COLS;
+}
+
+// Egy golyó képernyő-pozíciója a folytonos fizikai koordinátákból (b.col=sáv, b.y=mélység),
+// a gravitáció irányát figyelembe véve. 'down' esetén ez épp translate(col, y) — mint eddig.
+function placeBall(b) {
+  const cell = cellPx();
+  const gap = cell * gapFactor;
+  const [sx, sy] = physToScreenXY(b.col, b.y);
+  b.el.style.transform = `translate(${sx * cell + gap}px, ${sy * cell + gap}px)`;
+}
+
 function addBall(r, c, color) {
   const id = nextId++;
   const el = document.createElement('div');
   el.className = 'ball c' + color;
+  el.dataset.id = id;          // kattintós módban innen tudjuk, melyik golyóra kattintottak
   boardEl.appendChild(el);
-  balls.set(id, { color, el });
+  // A grid képernyő-cellája (r,c); a golyó fizikai állapota a gravitáció szerinti (sáv, mélység).
+  // col = SÁV (esés közben állandó), y = folytonos MÉLYSÉG, vy = sebesség.
+  const b = { color, el, col: laneOf(r, c), y: depthOf(r, c), vy: 0, settled: true };
+  balls.set(id, b);
   grid[r][c] = id;
+  placeBall(b); // azonnal a helyére, hogy ne villanjon fel a bal-felső sarokban
   return id;
 }
 
-function cellPx() {
-  return wrapEl.clientWidth / COLS;
+// Minden golyót a saját (col, y) fizikai pozíciója szerint kirajzol.
+function render() {
+  for (const b of balls.values()) placeBall(b);
 }
 
-function render() {
-  const cell = cellPx();
-  const gap = cell * 0.08;
+// A grid egész-koordinátás pozícióit "felemeli" a fizikába: minden golyó
+// megkapja a col/y-ját, esésre kész (settled=false), a grid kiürül.
+function liftFromGrid() {
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
       const id = grid[r][c];
       if (!id) continue;
       const b = balls.get(id);
-      const x = c * cell + gap;
-      const y = r * cell + gap;
-      b.el.style.transform = `translate(${x}px, ${y}px)`;
+      b.col = laneOf(r, c); b.y = depthOf(r, c); b.vy = 0; b.settled = false;
+      grid[r][c] = null;
     }
   }
 }
 
-// Egy mikro-lépés: minden golyó max 1 cellát mozdul a gravitáció szerint.
-// Elsőbbség: le > átlósan-le a dőlés felé > oldalra a dőlés felé.
-function stepGravity(dx) {
-  let moved = false;
-  for (let r = ROWS - 2; r >= 0; r--) {
-    const cols = [];
-    if (dx > 0) { for (let c = COLS - 1; c >= 0; c--) cols.push(c); }
-    else { for (let c = 0; c < COLS; c++) cols.push(c); }
-    for (const c of cols) {
+// A megállapodott (settled) golyókat visszaírja a gridbe egész sor-pozícióra.
+function settleToGrid() {
+  emptyGrid();
+  for (const [id, b] of balls) {
+    b.y = Math.round(b.y); b.vy = 0; b.settled = true;
+    const [r, c] = physToScreenRC(b.col, b.y);   // (sáv, mélység) -> képernyő rács-cella
+    grid[r][c] = id;
+  }
+}
+
+// A golyók col/y-ját a RÁCS szerint frissíti (rács → golyó), a rácsot MEGTARTVA és esés
+// nélkül. Forgatás után kell, hogy a golyók a forgatott helyükön MARADJANAK kirajzolva
+// (nem ugranak vissza), és láncolt forgatásnál is a rács maradjon az igazság.
+function syncBallsToGrid() {
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
       const id = grid[r][c];
       if (!id) continue;
-      const targets = [[r + 1, c]];
-      if (dx !== 0) {
-        targets.push([r + 1, c + dx]);
-        targets.push([r, c + dx]);
-      }
-      for (const [nr, nc] of targets) {
-        if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS && !grid[nr][nc]) {
-          grid[nr][nc] = id;
-          grid[r][c] = null;
-          moved = true;
-          break;
-        }
-      }
+      const b = balls.get(id);
+      b.col = laneOf(r, c); b.y = depthOf(r, c);
     }
   }
-  return moved;
+}
+
+// Esés MEGSZAKÍTÁSA: az éppen levegőben lévő golyókat a HELYÜKÖN (nem a padlóra ejtve)
+// befagyasztja a rácsba, hogy forgatni lehessen. Oszloponként, alulról fölfelé haladva
+// mindegyik a lekerekített sorába kerül, de sosem az alatta lévő fölé — így nincs átfedés
+// és nem tűnhet el golyó a rácsból (grid==balls megmarad). A fizika garantálja, hogy egy
+// oszlopban a golyók >=1 cellányira vannak, így a lekerekítés amúgy sem ütközne — ez csak
+// biztosíték. Utána a golyók settled=true állapotban, egész sor-pozíción állnak.
+function freezeToGrid() {
+  emptyGrid();
+  const cols = Array.from({length: COLS}, () => []);   // itt "col" = fizikai SÁV
+  for (const [id, b] of balls) cols[b.col].push(id);
+  for (let lane = 0; lane < COLS; lane++) {
+    const list = cols[lane].sort((a, b) => balls.get(a).y - balls.get(b).y); // belépő él → padló felé
+    let maxRow = ROWS - 1;                 // az alatta lévő "padló" MÉLYSÉGE (felfelé haladva csökken)
+    for (let i = list.length - 1; i >= 0; i--) {   // padló felől a belépő él felé
+      const b = balls.get(list[i]);
+      let row = Math.min(Math.round(b.y), maxRow);  // row = egész MÉLYSÉG
+      if (row < 0) row = 0;                // (elvi) biztosíték
+      b.y = row; b.vy = 0; b.settled = true;
+      const [sr, sc] = physToScreenRC(lane, row);   // (sáv, mélység) -> képernyő rács-cella
+      grid[sr][sc] = list[i];
+      maxRow = row - 1;
+    }
+  }
+}
+
+// Egy fizikai lépés (dt másodperc). Gyorsuló gravitáció: vy += g*dt, y += vy*dt.
+// A golyók egyenesen lefelé esnek; oszloponként alulról fölfelé állapítjuk meg a padlót,
+// így nem eshetnek egymásba. Visszaadja: mozgott-e még valami.
+function physicsStep(dt) {
+  let moving = false;
+  const cols = Array.from({length: COLS}, () => []);
+  for (const b of balls.values()) cols[b.col].push(b);
+  for (let c = 0; c < COLS; c++) {
+    const list = cols[c];
+    list.sort((a, b) => a.y - b.y);          // felülről lefelé
+    for (let i = list.length - 1; i >= 0; i--) {  // alulról fölfelé
+      const b = list[i];
+      if (b.settled) continue;
+      // korlát = vagy a tábla alja, vagy az alatta lévő golyó teteje (1 cellával fölötte)
+      let limit, belowSettled;
+      if (i === list.length - 1) { limit = ROWS - 1; belowSettled = true; }
+      else { limit = list[i + 1].y - 1; belowSettled = list[i + 1].settled; }
+      b.vy = Math.min(MAX_VY, b.vy + GRAVITY * dt);
+      b.y += b.vy * dt;
+      if (b.y >= limit) {
+        b.y = limit;                 // sosem lóg át az alatta lévőn
+        if (belowSettled) { b.vy = 0; b.settled = true; }  // csak MEGÁLLT golyóra/padlóra ül le
+        else moving = true;          // az alatta lévő még esik → vele együtt esik tovább
+      } else moving = true;
+    }
+  }
+  return moving;
+}
+
+// Az egész táblát 90°-kal elforgatja (dir=+1 jobbra/óramutató, -1 balra).
+function rotateBoard(dir) {
+  const N = ROWS; // négyzetes tábla
+  const ng = Array.from({length: N}, () => Array(N).fill(null));
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      if (!grid[r][c]) continue;
+      let nr, nc;
+      if (dir > 0) { nr = c; nc = N - 1 - r; }        // óramutató szerint
+      else { nr = N - 1 - c; nc = r; }                // ellentétesen
+      ng[nr][nc] = grid[r][c];
+    }
+  }
+  grid = ng;
+}
+
+// Forgatás. A tábla LÁTHATÓAN megpördül 90°-ot; a logikai forgatást az animáció végén
+// kötjük el, de a golyók EKKOR MÉG NEM esnek le. Egymás után többször is lehet forgatni
+// (180°, 270°…). Ha HOLD_MS ideig nincs újabb forgatás, akkor indul a gravitációs esés.
+const HOLD_MS = 200;       // ennyi nyugalom (ms) után kezdenek esni a golyók (debounce a nyomkodás végére)
+let spinning = false;
+let spinQueue = [];        // pörgés közben érkező további nyomások sora (irányokkal)
+let fallTimer = null;      // az "1 mp múlva essenek" időzítő
+
+function rotate(dir) {     // ezt hívja a bemenet (nyíl billentyű / gomb)
+  if (!running) return;
+  if (spinning) { spinQueue.push(dir); return; }   // pörgés közben sorba tesszük a nyomást
+  if (animating) {         // esés KÖZBEN is lehet forgatni: állítsd meg az esést, fagyaszd rácsra
+    cancelAnimationFrame(rafId);
+    animating = false;
+    freezeToGrid();        // a levegőben lévő golyók a helyükön megállnak, rácsra kerülnek
+    render();              // és így is látszanak (egész pozíción), aztán a tábla velük együtt pörög
+    // spawnPending marad, ahogy volt — a forgatás utáni esés (triggerFall) majd kezeli
+  }
+  startSpin(dir);
+}
+
+function startSpin(dir) {
+  spinning = true;
+  stable = false;
+  clearTimeout(fallTimer); fallTimer = null;       // új forgatás → nullázódik az esés-időzítő
+  beep(340, 0.06, 0.05);
+
+  const cls = dir > 0 ? 'spin-cw' : 'spin-ccw';
+  let done = false;
+  const commit = () => {           // az animáció végén (vagy biztonsági időzítővel) fut le, EGYSZER
+    if (done) return; done = true;
+    wrapEl.removeEventListener('animationend', commit);
+    // A logikai forgatás és az osztály levétele EGY JS-körben → nincs ugrás. Esés MÉG NINCS.
+    rotateBoard(dir);
+    syncBallsToGrid();             // a golyók a forgatott rácsra kerülnek (nem ugranak vissza!)
+    render();                      // és így is maradnak kirajzolva — esés MÉG NINCS
+    wrapEl.classList.remove(cls);
+    spinning = false;
+    if (spinQueue.length) {        // volt közben újabb nyomás → azonnal pörög tovább
+      startSpin(spinQueue.shift());
+    } else {                       // megállt a forgatás → HOLD_MS múlva essenek a golyók
+      fallTimer = setTimeout(triggerFall, HOLD_MS);
+    }
+  };
+
+  wrapEl.addEventListener('animationend', commit);
+  setTimeout(commit, 500);         // biztonsági háló, ha az animationend elmaradna (pl. háttér-tab)
+  void wrapEl.offsetWidth;         // reflow, hogy láncolt forgatásnál újrainduljon az animáció
+  wrapEl.classList.add(cls);
+}
+
+// A forgatás(ok) abbahagyása után HOLD_MS-mal: most már ESSENEK a golyók (+ egyezés, + spawn).
+function triggerFall() {
+  fallTimer = null;
+  if (!running || animating || spinning) return;
+  spawnPending = true;
+  liftFromGrid();
+  startFall();
+}
+
+// ===== FIZIKAI (döntéses) mód =====
+// A tábla ÁLL; a gravitáció fordul 90°-ot. Egy 90°-os fordulat = egy "lépés": a golyók
+// befagynak a helyükön, jönnek új golyók (mint a gombos módnál), majd az új él felé esnek.
+function applyGravityChange(newDir) {
+  if (!running || spinning) return;
+  if (newDir === gravityDir) return;
+  if (animating) {                 // esés közben fordítottunk: állítsd meg, fagyaszd a RÉGI gravitáció szerint
+    cancelAnimationFrame(rafId);
+    animating = false;
+    freezeToGrid();
+  }
+  gravityDir = newDir;             // csak MOST vált a gravitáció (a fagyasztás után!)
+  stable = false;
+  spawnPending = true;             // paritás a gombos móddal: minden fordulat után jönnek új golyók
+  beep(340, 0.06, 0.05);
+  liftFromGrid();                  // a golyók az ÚJ gravitáció szerinti (sáv, mélység)-be kerülnek
+  startFall();                     // és az új él felé esnek/újrarendeződnek
+  updateDbg();                     // a debug-kijelző (desktop-teszten is) mutassa az új irányt
+}
+
+// A gravitációt 90°-onként lépteti (step=+1 CW = telefon jobbra fordítva). Ezt hívja a szenzor
+// és a nyíl-billentyűk (desktop-teszt) is — így a curSteps mindig szinkronban marad.
+function rotGravity(step) {
+  curSteps = ((curSteps + step) % 4 + 4) % 4;
+  applyGravityChange(DIR_CW[curSteps]);
+}
+
+// --- Szenzor: devicemotion (gyorsulásmérő + gravitáció). A képernyő-síkra vetített gravitáció
+// szögéből olvassuk ki, hányszor 90°-ot fordult a telefon. A belépéskori állást KALIBRÁLJUK
+// "le"-ként (baseAngle) — így nem kell platformfüggő előjel-konvencióval bajlódni. ---
+function handleMotion(e) {
+  const g = e.accelerationIncludingGravity;
+  if (!g) return;
+  const ax = g.x || 0, ay = g.y || 0;   // ax: képernyő jobbra+, ay: képernyő fölfelé+ (eszköz-keret)
+  const mag = Math.hypot(ax, ay);
+  if (mag < 3) { updateDbg(ax, ay, null); return; }  // majdnem lapos → megbízhatatlan, kihagyjuk
+  const angle = Math.atan2(ax, ay) * 180 / Math.PI;
+  if (baseAngle === null) baseAngle = angle;         // első stabil olvasás = kalibráció (ez a "le")
+  let delta = ((((angle - baseAngle) * DIR_SENSE) + 180) % 360 + 360) % 360 - 180;  // -180..180
+  const target = ((Math.round(delta / 90) % 4) + 4) % 4;
+  if (angDist(delta, curSteps * 90) > 45 + HYST) {   // hiszterézis: csak jókora fordulatnál váltunk
+    curSteps = target;
+    applyGravityChange(DIR_CW[curSteps]);
+  }
+  updateDbg(ax, ay, delta);
+}
+function angDist(a, b) { let d = Math.abs(a - b) % 360; return d > 180 ? 360 - d : d; }
+
+function startMotion() {
+  if (motionActive) return;
+  window.addEventListener('devicemotion', handleMotion);
+  motionActive = true;
+}
+function stopMotion() {
+  if (!motionActive) return;
+  window.removeEventListener('devicemotion', handleMotion);
+  motionActive = false;
+}
+
+// Van-e értelme a fizikai módnak ezen az eszközön (érintőképernyő / durva mutató)?
+function isMobileLike() {
+  return (navigator.maxTouchPoints || 0) > 0 || matchMedia('(pointer: coarse)').matches;
+}
+
+// A fizikai mód belépő-ceremóniája — KÖTELEZŐEN a Start koppintásból (user gesture) hívva:
+// az iOS engedélykérés és a fullscreen is csak gesztusból indítható.
+function kickPhysical() {
+  // 1) Fullscreen + orientáció-zár (Android: megy; iPhone Safari: nem támogatott → marad a sima nézet).
+  const el = document.documentElement;
+  const fs = el.requestFullscreen ? el.requestFullscreen()
+           : el.webkitRequestFullscreen ? el.webkitRequestFullscreen() : null;
+  Promise.resolve(fs)
+    .then(() => screen.orientation && screen.orientation.lock && screen.orientation.lock('portrait'))
+    .catch(() => showNote('iPhone: kapcsold ki az automatikus forgatást (Vezérlőközpont), hogy a tábla stabil maradjon.', 6000));
+  // 2) Szenzor-engedély (iOS 13+: gesztusból kell). Androidon nincs requestPermission → egyből megy.
+  const DM = window.DeviceMotionEvent;
+  const perm = (DM && typeof DM.requestPermission === 'function')
+    ? DM.requestPermission().catch(() => 'denied')
+    : Promise.resolve('granted');
+  perm.then(res => {
+    if (res === 'granted') startMotion();
+    else showNote('A mozgásérzékelő engedély nélkül nem indul — így csak a nyilakkal forgatható.', 6000);
+  });
+}
+
+// Kis buborék-üzenet (pl. iPhone-instrukció). ms után eltűnik.
+let noteTimer = null;
+function showNote(txt, ms = 4000) {
+  const n = document.getElementById('note');
+  n.textContent = txt; n.style.display = 'block';
+  clearTimeout(noteTimer);
+  noteTimer = setTimeout(() => { n.style.display = 'none'; }, ms);
+}
+
+// Fejlesztői kijelző (fizikai mód): irány + nyers szenzoradat. 'd'-vel elrejthető.
+// Szenzor nélkül (desktop, nyilas teszt) is hívható — ilyenkor ax/ay/delta hiányzik.
+function updateDbg(ax, ay, delta) {
+  const n = document.getElementById('dbg');
+  if (!n) return;
+  n.textContent =
+    'grav: ' + gravityDir + '  lépés: ' + curSteps + '\n' +
+    'ax: ' + (ax == null ? '—' : ax.toFixed(2)) + '  ay: ' + (ay == null ? '—' : ay.toFixed(2)) + '\n' +
+    'Δszög: ' + (delta == null ? '—' : delta.toFixed(0) + '°');
+}
+
+// Fullscreen elhagyása + orientáció feloldása (Kilépéskor).
+function exitFullscreen() {
+  try { if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock(); } catch (e) {}
+  try {
+    if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen();
+    else if (document.webkitFullscreenElement && document.webkitExitFullscreen) document.webkitExitFullscreen();
+  } catch (e) {}
+}
+
+// Egy n méretű csoport pontértéke a választott pontozási képlet szerint (a kombó-szorzó KÜLÖN jön).
+// quad: (n-1)²·10 (2→10,3→40,4→90…) | exp2: 10·2^(n-2) | exp3: 10·3^(n-2) | exp10: 10^(n-1) (2→10,3→100…)
+function groupPoints(n) {
+  switch (scoreMode) {
+    case 'exp2':  return 10 * Math.pow(2, n - 2);
+    case 'exp3':  return 10 * Math.pow(3, n - 2);
+    case 'exp10': return Math.pow(10, n - 1);
+    case 'quad':
+    default:      return Math.pow(n - 1, 2) * 10;
+  }
 }
 
 // Összefüggő (4-szomszéd) azonos színű csoportok >= MATCH_MIN eltávolítása.
@@ -242,23 +720,27 @@ function checkMatches() {
           }
         }
       }
-      if (group.length >= MATCH_MIN) toRemove.push(group);
+      if (group.length >= matchMin) toRemove.push(group);
     }
   }
   if (toRemove.length === 0) { combo = 0; return 0; }
 
   combo++;
   let removedCount = 0;
+  const cell = cellPx();
+  const gap = cell * gapFactor;
   for (const group of toRemove) {
-    const pts = 20 * Math.pow(2, group.length - 3); // 3→20, 4→40, 5→80...
+    const pts = groupPoints(group.length);
     score += Math.round(pts) * combo;
     for (const [gr, gc] of group) {
       const id = grid[gr][gc];
       const b = balls.get(id);
-      b.el.style.setProperty('--x', b.el.style.transform.match(/translate\(([^,]+),/)?.[1] || '0px');
+      // az eltűnő golyó a HELYÉN pukkanjon ki (mindkét koordináta kell!)
+      b.el.style.setProperty('--x', (gc * cell + gap) + 'px');
+      b.el.style.setProperty('--y', (gr * cell + gap) + 'px');
       b.el.classList.add('pop');
       const el = b.el;
-      setTimeout(() => el.remove(), 200);
+      setTimeout(() => el.remove(), 250);
       balls.delete(id);
       grid[gr][gc] = null;
       removedCount++;
@@ -269,77 +751,266 @@ function checkMatches() {
   return removedCount;
 }
 
-function boardFull() {
-  for (let c = 0; c < COLS; c++) if (!grid[0][c]) return false;
+// KATTINTÓS MÓD: a (r,c) cellán lévő golyó azonos színű, ÖSSZEFÜGGŐ (4-szomszéd) csoportját
+// eltávolítja, HA legalább matchMin nagyságú; utána a maradék golyók újrarendeződnek (esnek).
+// Egy kattintás = egy csoport (nincs automatikus kaszkád — a következőre újra kattintani kell).
+function tryPop(r, c) {
+  const startId = grid[r][c];
+  if (!startId) return false;
+  const color = balls.get(startId).color;
+  const group = [];
+  const seen = Array.from({length: ROWS}, () => Array(COLS).fill(false));
+  const stack = [[r, c]];
+  seen[r][c] = true;
+  while (stack.length) {
+    const [cr, cc] = stack.pop();
+    group.push([cr, cc]);
+    for (const [dr, dc] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+      const nr = cr + dr, nc = cc + dc;
+      if (nr>=0&&nr<ROWS&&nc>=0&&nc<COLS && !seen[nr][nc] && grid[nr][nc]
+          && balls.get(grid[nr][nc]).color === color) {
+        seen[nr][nc] = true;
+        stack.push([nr, nc]);
+      }
+    }
+  }
+  if (group.length < matchMin) { beep(200, 0.05, 0.05); return false; } // túl kicsi → nem tűnik el
+
+  const pts = Math.round(groupPoints(group.length));
+  score += pts;
+  scoreEl.textContent = score;
+  const cell = cellPx();
+  const gap = cell * gapFactor;
+  for (const [gr, gc] of group) {
+    const id = grid[gr][gc];
+    const b = balls.get(id);
+    b.el.style.setProperty('--x', (gc * cell + gap) + 'px');
+    b.el.style.setProperty('--y', (gr * cell + gap) + 'px');
+    b.el.classList.add('pop');
+    const el = b.el;
+    setTimeout(() => el.remove(), 250);
+    balls.delete(id);
+    grid[gr][gc] = null;
+  }
+  beep(560, 0.12);
+  stable = false;
+  liftFromGrid();   // a maradék golyók a fizikába kerülnek
+  startFall();      // és leesnek/újrarendeződnek (kattintós módban utána sem tűnik el semmi magától)
   return true;
 }
 
-// ===== Fő ciklus =====
-let loopTimer = null, spawnTimer = null;
+function boardFull() {
+  // Tele = a belépő él (0-mélység) minden sávja foglalt → nem fér be új golyó.
+  for (let lane = 0; lane < COLS; lane++) {
+    const [r, c] = physToScreenRC(lane, 0);
+    if (!grid[r][c]) return false;
+  }
+  return true;
+}
 
-function tick() {
-  if (!running) return;
-  const dx = currentDx();
-  tiltIndEl.textContent = dx < 0 ? '◀' : dx > 0 ? '▶' : '•';
-  const moved = stepGravity(dx);
-  if (moved) {
-    if (!wasMoving) { beep(200, 0.04, 0.05); wasMoving = true; }
-    render();
-  } else {
-    wasMoving = false;
+// Matematikailag NINCS több lehetséges egyezés? Csak akkor lehet emiatt vége, ha már nem jön
+// több golyó (remaining==0). Ha egyetlen szín sem éri el a matchMin darabszámot a táblán,
+// akkor bárhogy is forgatjuk, sosem tűnhet el több golyó → vége. Ha van legalább matchMin
+// darab valamelyik színből, adunk esélyt (forgatással összehozható). A "kipucoltad a táblát"
+// eset (0 golyó) is ide esik: nincs egyetlen szín sem, ami elérné a matchMin-t → true.
+function noMovesLeft() {
+  if (remaining > 0) return false;
+  const counts = {};
+  for (const b of balls.values()) {
+    counts[b.color] = (counts[b.color] || 0) + 1;
+    if (counts[b.color] >= matchMin) return false;   // ezzel a színnel még lehet egyezés
+  }
+  return true;
+}
+
+// ===== Fő ciklus: gyorsuló gravitáció requestAnimationFrame-mel =====
+let rafId = null;
+let lastT = 0;
+let animating = false;   // igaz, amíg golyók esnek (ilyenkor nincs forgatás)
+let movedThisFall = false;
+
+function startFall() {
+  stable = false;
+  if (animating) return;          // már fut a fizika-hurok
+  animating = true;
+  movedThisFall = false;
+  lastT = performance.now();
+  rafId = requestAnimationFrame(frame);
+}
+
+function frame(now) {
+  if (!running) { animating = false; return; }
+  const dt = Math.min(0.033, (now - lastT) / 1000 || 0); // tab-váltásnál se ugorjon nagyot
+  lastT = now;
+  const moving = physicsStep(dt);
+  render();
+  if (moving) { movedThisFall = true; rafId = requestAnimationFrame(frame); }
+  else { animating = false; onSettled(); }
+}
+
+// Minden golyó megállt → gridbe zár, egyezést keres, kaszkádol / spawnol / vége.
+function onSettled() {
+  settleToGrid();
+  if (movedThisFall) beep(150, 0.05, 0.04); // halk koppanás a landolásra
+
+  if (!clickMode) {                  // AUTOMATIKUS mód: az egyezések maguktól eltűnnek + kaszkád
     const removed = checkMatches();
-    if (removed > 0) {
-      render();
-    } else {
-      if (boardFull()) { gameOver(); return; }
+    if (removed > 0) {               // kaszkád: a maradék tovább esik
+      liftFromGrid();
+      startFall();
+      return;
     }
+  }
+  // KATTINTÓS módban itt NEM tűnik el semmi — a golyók maradnak, a játékos kattint (tryPop).
+  if (spawnPending) {                // forgatás utáni új golyók, majd esnek
+    spawnPending = false;
+    spawnNew(SPAWN_PER_MOVE);
+    liftFromGrid();
+    startFall();
+    return;
+  }
+  stable = true;                     // teljes nyugalom
+  if (boardFull()) { gameOver('Vége!', 'Megtelt a tábla · Pontszám: ' + score); return; }
+  if (noMovesLeft()) {               // matematikailag nincs több egyezés → vége
+    if (balls.size === 0)
+      gameOver('Kipucoltad a táblát! 🎉', 'Minden golyó eltűnt · Pontszám: ' + score);
+    else
+      gameOver('Nincs több lépés', 'Nem hozható ki több egyezés · Pontszám: ' + score);
   }
 }
 
-function spawnTick() {
-  if (!running) return;
-  // dőlés irányával ellentétes / felső üres cellába pottyan új golyó
-  const freeTop = [];
-  for (let c = 0; c < COLS; c++) if (!grid[0][c]) freeTop.push(c);
-  if (freeTop.length === 0) return;
-  const c = freeTop[Math.floor(Math.random() * freeTop.length)];
-  addBall(0, c, Math.floor(Math.random() * NCOLORS));
-  render();
+// N új golyó a felső sor véletlen üres celláiba (onnan potyognak le).
+// Csak addig, amíg van a keretből (remaining) — ha elfogy, nem jön több, de a játék MEGY tovább.
+function spawnNew(n) {
+  for (let k = 0; k < n; k++) {
+    if (remaining <= 0) break;
+    const freeLanes = [];                 // a belépő él (0-mélység) szabad sávjai
+    for (let lane = 0; lane < COLS; lane++) {
+      const [r, c] = physToScreenRC(lane, 0);
+      if (!grid[r][c]) freeLanes.push(lane);
+    }
+    if (freeLanes.length === 0) break;
+    const lane = freeLanes[Math.floor(Math.random() * freeLanes.length)];
+    const [r, c] = physToScreenRC(lane, 0);
+    addBall(r, c, Math.floor(Math.random() * nColors));
+    remaining--;
+  }
+  remainEl.textContent = remaining;
 }
 
 function startGame() {
+  cancelAnimationFrame(rafId);
+  clearTimeout(fallTimer); fallTimer = null;
+  stopTimer();
+  stopMotion();                                   // előző menet szenzora leáll
+  animating = false; spinning = false; spinQueue = [];
+  gravityDir = 'down'; curSteps = 0; baseAngle = null;   // minden menet "le" gravitációval indul
+  wrapEl.classList.remove('spin-cw', 'spin-ccw');
   emptyGrid();
   balls.forEach(b => b.el.remove());
   balls.clear();
-  score = 0; combo = 0; wasMoving = false;
+  score = 0; combo = 0;
+  stable = false; spawnPending = false;
   scoreEl.textContent = '0';
 
-  // Kezdő szórás: véletlen üres cellákba golyók, majd leesnek.
+  // Kezdő szórás: véletlen üres cellákba golyók, majd (gravitációval) leesnek.
   const cells = [];
   for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) cells.push([r, c]);
   for (let i = cells.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [cells[i], cells[j]] = [cells[j], cells[i]];
   }
-  for (let i = 0; i < INITIAL_BALLS; i++) {
+  // Teszt-beállítások a szövegmezőkből (érvénytelen érték esetén az alapérték).
+  const readNum = (id, def, lo, hi) => {
+    let v = parseInt(document.getElementById(id).value, 10);
+    if (!Number.isFinite(v)) v = def;
+    return Math.max(lo, Math.min(hi, v));
+  };
+  matchMin = readNum('matchMin', MATCH_MIN, 2, 10);
+  nColors = readNum('colorCount', NCOLORS, 2, 5);
+  remaining = readNum('maxBalls', 100, 1, 999);
+  timeLimit = readNum('timeLimit', 0, 0, 999);
+  scoreMode = document.getElementById('scoreMode').value;
+  clickMode = document.getElementById('mode').value === 'click';
+  document.body.classList.toggle('click-mode', clickMode); // kurzor-jelzés a golyókon
+  // FIZIKAI mód: csak akkor, ha a menüben ez van kiválasztva. Mobilon szenzor + fullscreen + lock
+  // (a kickPhysical MÉG a Start-gesztusban fut, ezért van itt); desktopon a nyilakkal szimulálható.
+  physicalMode = document.getElementById('rotMode').value === 'physical';
+  document.body.classList.toggle('physical-mode', physicalMode);
+  if (physicalMode && isMobileLike()) kickPhysical();   // engedély + fullscreen — a Start koppintásból
+  applyShape();     // alak + rés beállítása MÉG a golyók létrehozása előtt (pozíció a gapFactor-ral számol)
+  saveSettings();   // a beállított értékek megőrzése a következő betöltésre
+
+  // Kezdő golyók: mező (1–100), a tábla méretére ÉS a hátralévő keretre korlátozva.
+  let startCount = Math.min(readNum('ballCount', INITIAL_BALLS, 1, 100), cells.length, remaining);
+  for (let i = 0; i < startCount; i++) {
     const [r, c] = cells[i];
-    addBall(r, c, Math.floor(Math.random() * NCOLORS));
+    addBall(r, c, Math.floor(Math.random() * nColors));
   }
-  render();
+  remaining -= startCount;         // a kezdő szórás is fogyasztja a keretet
+  remainEl.textContent = remaining;
 
   running = true;
   overlay.classList.add('hidden');
-  clearInterval(loopTimer); clearInterval(spawnTimer);
-  loopTimer = setInterval(tick, STEP_MS);
-  spawnTimer = setInterval(spawnTick, SPAWN_MS);
+  startTimer();     // időre menő játéknál elindul a visszaszámláló (0 = nincs időkorlát)
+  liftFromGrid();   // a szétszórt golyók a fizikába kerülnek
+  startFall();      // és gyorsulva leesnek
 }
 
-function gameOver() {
+// ===== Időre menő játék =====
+function fmtTime(s) {                 // mp → "m:ss"
+  s = Math.max(0, s);
+  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+}
+function stopTimer() {
+  if (timerId) { clearInterval(timerId); timerId = null; }
+}
+function startTimer() {
+  stopTimer();
+  if (timeLimit <= 0) { timeBox.style.display = 'none'; return; }  // nincs időkorlát
+  timeLeft = timeLimit;
+  timeBox.style.display = '';
+  clockEl.textContent = fmtTime(timeLeft);
+  clockEl.style.color = '';
+  timerId = setInterval(() => {
+    timeLeft--;
+    clockEl.textContent = fmtTime(timeLeft);
+    clockEl.style.color = timeLeft <= 10 ? '#ff6b6b' : '';   // utolsó 10 mp pirosban
+    if (timeLeft <= 0) {
+      stopTimer();
+      if (running) gameOver('Lejárt az idő!', 'Idő lejárt · Pontszám: ' + score);
+    }
+  }, 1000);
+}
+
+// Visszatérés a kezdőképernyőre játék közben (nem game over — a menetet eldobjuk, a következő
+// Indítás úgyis mindent nulláz). Megállítjuk a fizikát/pörgést, és visszaállítjuk az overlay szövegét.
+function returnToMenu() {
+  stopTimer();
   running = false;
-  clearInterval(loopTimer); clearInterval(spawnTimer);
+  cancelAnimationFrame(rafId);
+  clearTimeout(fallTimer); fallTimer = null;
+  animating = false; spinning = false; spinQueue = [];
+  if (physicalMode) { stopMotion(); exitFullscreen(); }   // Kilépés: szenzor le, fullscreen vissza
+  physicalMode = false;
+  document.body.classList.remove('physical-mode');
+  wrapEl.classList.remove('spin-cw', 'spin-ccw');
+  overlay.querySelector('h1').textContent = ORIG_H1;
+  overlay.querySelector('p').innerHTML = ORIG_P_HTML;
+  overlay.querySelector('#startBtn').textContent = 'Indítás';
+  overlay.classList.remove('hidden');
+}
+
+function gameOver(title, msg) {
+  running = false;
+  stopTimer();
+  stopMotion();                    // vége → szenzor leáll (fullscreen marad, az overlay ráül)
+  cancelAnimationFrame(rafId);
+  clearTimeout(fallTimer); fallTimer = null;
+  animating = false; spinning = false; spinQueue = [];
   beep(160, 0.5, 0.2);
-  overlay.querySelector('h1').textContent = 'Vége!';
-  overlay.querySelector('p').textContent = 'Pontszám: ' + score;
+  overlay.querySelector('h1').textContent = title;
+  overlay.querySelector('p').textContent = msg;
   overlay.querySelector('#startBtn').textContent = 'Újra';
   overlay.classList.remove('hidden');
 }
@@ -361,50 +1032,104 @@ function beep(freq, dur, vol = 0.08) {
   } catch (e) {}
 }
 
+// ===== Beállítások megőrzése (localStorage) =====
+// A kezdőképernyő mezőit Indításkor elmentjük, és a következő betöltéskor visszaírjuk,
+// hogy ne kelljen újra beállítani. (localStorage, nem cookie: nem jár le, nem megy a szerverre.)
+const SETTINGS_KEY = 'forgosGolyok.settings';
+const SETTING_FIELDS = ['mode', 'rotMode', 'shape', 'scoreMode', 'ballCount', 'colorCount', 'matchMin', 'maxBalls', 'timeLimit'];
+
+// Az alak-választó (#shape) alapján beállítja a golyók formáját és a rés sűrűségét.
+// A JS gapFactor és a CSS --gap-factor MINDIG együtt mozog, hogy a golyó-pozíció (JS) és
+// a golyó-méret (CSS) egyezzen.
+function applyShape() {
+  const shape = document.getElementById('shape').value;
+  document.body.classList.remove('shape-balls', 'shape-square', 'shape-rounded');
+  if (shape === 'balls')       { document.body.classList.add('shape-balls');   gapFactor = 0.08; }
+  else if (shape === 'square') { document.body.classList.add('shape-square');  gapFactor = 0.08; }
+  else                         { document.body.classList.add('shape-rounded'); gapFactor = 0.03; } // lekerekített, sűrű
+  document.documentElement.style.setProperty('--gap-factor', gapFactor);
+}
+
+function saveSettings() {
+  try {
+    const s = {};
+    for (const id of SETTING_FIELDS) s[id] = document.getElementById(id).value;
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+  } catch (e) {}   // pl. privát mód / letiltott tárolás — a játék így is menjen
+}
+
+function loadSettings() {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (!raw) return;
+    const s = JSON.parse(raw);
+    for (const id of SETTING_FIELDS) {
+      if (s[id] != null && s[id] !== '') document.getElementById(id).value = s[id];
+    }
+  } catch (e) {}
+}
+
 // ===== Vezérlés =====
+// Nyíl billentyűk: egy lenyomás = egy 90°-os forgatás (auto-ismétlést kizárjuk).
 document.addEventListener('keydown', e => {
-  if (e.key === 'ArrowLeft') keyDx = -1;
-  else if (e.key === 'ArrowRight') keyDx = 1;
-});
-document.addEventListener('keyup', e => {
-  if (e.key === 'ArrowLeft' && keyDx === -1) keyDx = 0;
-  else if (e.key === 'ArrowRight' && keyDx === 1) keyDx = 0;
-});
-
-function holdBtn(el, dir) {
-  const down = e => { e.preventDefault(); btnDx = dir; el.classList.add('held'); };
-  const up = e => { e.preventDefault(); if (btnDx === dir) btnDx = 0; el.classList.remove('held'); };
-  el.addEventListener('pointerdown', down);
-  el.addEventListener('pointerup', up);
-  el.addEventListener('pointercancel', up);
-  el.addEventListener('pointerleave', up);
-}
-holdBtn(document.getElementById('leftBtn'), -1);
-holdBtn(document.getElementById('rightBtn'), 1);
-
-function onTilt(e) {
-  const g = e.gamma; // bal-jobb dőlés fokban
-  if (g == null) return;
-  if (g > TILT_DEG) tiltDx = 1;
-  else if (g < -TILT_DEG) tiltDx = -1;
-  else tiltDx = 0;
-}
-
-document.getElementById('startBtn').addEventListener('click', async () => {
-  // iOS: dőlés-engedély kérése felhasználói gesztusra
-  if (typeof DeviceOrientationEvent !== 'undefined' &&
-      typeof DeviceOrientationEvent.requestPermission === 'function') {
-    try {
-      const res = await DeviceOrientationEvent.requestPermission();
-      if (res === 'granted') window.addEventListener('deviceorientation', onTilt);
-    } catch (e) {}
-  } else {
-    window.addEventListener('deviceorientation', onTilt);
+  if (e.key === 'd' || e.key === 'D') {           // debug-kijelző ki/be (fizikai mód)
+    document.body.classList.toggle('dbg-off');
+    return;
   }
+  if (e.repeat) return;
+  if (physicalMode) {                             // fizikai módban a nyíl a GRAVITÁCIÓT forgatja (desktop-teszt)
+    if (e.key === 'ArrowLeft') rotGravity(-1);
+    else if (e.key === 'ArrowRight') rotGravity(1);
+    return;
+  }
+  if (e.key === 'ArrowLeft') rotate(-1);
+  else if (e.key === 'ArrowRight') rotate(1);
+});
+
+document.getElementById('leftBtn').addEventListener('click', () => rotate(-1));
+document.getElementById('rightBtn').addEventListener('click', () => rotate(1));
+
+// KATTINTÓS mód: egy golyóra kattintva eltűnik az azonos színű, összeérő csoportja (ha elég nagy),
+// és a többi golyó újrarendeződik. Csak nyugalomban (stable), nem esés/pörgés közben.
+boardEl.addEventListener('click', e => {
+  if (!clickMode || !running || !stable || animating || spinning) return;
+  const el = e.target.closest('.ball');
+  if (!el) return;
+  const b = balls.get(+el.dataset.id);
+  if (!b) return;
+  const [r, c] = physToScreenRC(b.col, Math.round(b.y));  // (sáv, mélység) -> képernyő rács-cella
+  tryPop(r, c);
+});
+
+document.getElementById('startBtn').addEventListener('click', () => {
   startGame();
 });
 
+document.getElementById('menuBtn').addEventListener('click', returnToMenu);
+
+// Enter bármelyik beállító mezőben = indítás (kényelem teszteléshez)
+SETTING_FIELDS.forEach(id => {
+  document.getElementById(id).addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); startGame(); }
+  });
+});
+
+// A korábban elmentett beállítások visszatöltése a mezőkbe (ha van), majd az alak alkalmazása
+// (hogy a body-osztály + --gap-factor a mentett választásnak megfeleljen).
+loadSettings();
+applyShape();
+
 window.addEventListener('resize', () => { if (running) render(); });
+
+// Ha esés közben háttérbe kerül a lap, a böngésző leállítja a requestAnimationFrame-et.
+// Visszatéréskor újraindítjuk a fizika-hurkot, hogy a golyók biztosan leérjenek.
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && running && animating) {
+    cancelAnimationFrame(rafId);
+    lastT = performance.now();
+    rafId = requestAnimationFrame(frame);
+  }
+});
 </script>
 </body>
 </html>
